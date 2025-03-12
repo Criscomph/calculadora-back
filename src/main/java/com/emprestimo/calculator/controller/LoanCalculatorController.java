@@ -10,6 +10,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/emprestimo")
+@CrossOrigin(origins = "http://localhost:3000") // Linha para React reconhecer o backend
 public class LoanCalculatorController {
 
     private final LoanCalculatorService calculatorService;
