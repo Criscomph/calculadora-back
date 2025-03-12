@@ -12,37 +12,142 @@ import java.time.temporal.ChronoUnit;
 @Service
 public class LoanCalculatorService {
 
+    private static final int NUMERO_PARCELAS = 120;
+    private static final int DIAS_BASE = 360;
+
     public List<InstallmentDTO> calculateLoan(LoanCalculation loan) {
         validateDates(loan);
-        
         List<InstallmentDTO> installments = new ArrayList<>();
         
-        // Adiciona a data inicial
-        addInstallment(installments, loan.getDataInicial(), calculateInitialAmount(loan), 0);
+        double valorEmprestimo = loan.getValorEmprestimo();
+        double taxaAnual = loan.getTaxaJuros() / 100.0;
+        double amortizacaoMensal = round(valorEmprestimo / NUMERO_PARCELAS);
         
-        // Adiciona as parcelas mensais
-        LocalDate currentDate = loan.getPrimeiroPagamento();
-        int installmentNumber = 1;
+        // Registro inicial
+        InstallmentDTO inicial = createInstallment(
+            loan.getDataInicial(),
+            valorEmprestimo,
+            valorEmprestimo,
+            null,
+            0.0,
+            0.0,
+            valorEmprestimo,
+            0.0,
+            0.0,
+            0
+        );
+        installments.add(inicial);
         
-        while (!currentDate.isAfter(loan.getDataFinal())) {
-            // Ajusta para o último dia do mês se necessário
-            LocalDate adjustedDate = adjustToMonthEnd(currentDate);
+        LocalDate dataAtual = loan.getDataInicial();
+        double saldoDevedorBase = valorEmprestimo;
+        double saldoDevedorAtual = valorEmprestimo;
+        double jurosAcumulado = 0.0;
+        int numeroParcela = 1;
+        
+        while (!dataAtual.isAfter(loan.getDataFinal())) {
+            LocalDate proximaData;
             
-            // Calcula o valor da parcela
-            double installmentAmount = calculateInstallmentAmount(loan, installmentNumber);
+            // Determina a próxima data
+            if (dataAtual.equals(loan.getDataInicial())) {
+                proximaData = dataAtual.withDayOfMonth(dataAtual.lengthOfMonth());
+            } else if (dataAtual.getDayOfMonth() == dataAtual.lengthOfMonth()) {
+                LocalDate dia15ProximoMes = dataAtual.plusMonths(1).withDayOfMonth(15);
+                if (dia15ProximoMes.isAfter(loan.getPrimeiroPagamento()) || 
+                    dia15ProximoMes.equals(loan.getPrimeiroPagamento())) {
+                    proximaData = dia15ProximoMes;
+                } else {
+                    proximaData = dataAtual.plusMonths(1).withDayOfMonth(
+                        dataAtual.plusMonths(1).lengthOfMonth());
+                }
+            } else {
+                proximaData = dataAtual.withDayOfMonth(dataAtual.lengthOfMonth());
+            }
             
-            // Adiciona a parcela
-            addInstallment(installments, adjustedDate, installmentAmount, installmentNumber);
+            long diasPeriodo = ChronoUnit.DAYS.between(dataAtual, proximaData);
+            double fatorJuros = Math.pow(1 + taxaAnual, diasPeriodo / (double)DIAS_BASE) - 1;
+            double jurosPeriodo = round(saldoDevedorBase * fatorJuros);
             
-            // Move para o próximo mês mantendo o mesmo dia
-            currentDate = currentDate.plusMonths(1);
-            installmentNumber++;
+            boolean isPagamento = proximaData.getDayOfMonth() == 15 && 
+                (proximaData.isAfter(loan.getPrimeiroPagamento()) || 
+                proximaData.equals(loan.getPrimeiroPagamento()));
+            
+            InstallmentDTO installment;
+            if (isPagamento) {
+                jurosAcumulado += jurosPeriodo;
+                String consolidada = numeroParcela + "/" + NUMERO_PARCELAS;
+                
+                saldoDevedorBase = round(saldoDevedorBase - amortizacaoMensal);
+                double valorParcela = round(amortizacaoMensal + jurosAcumulado);
+                
+                installment = createInstallment(
+                    proximaData,
+                    0.0,
+                    saldoDevedorBase,
+                    consolidada,
+                    valorParcela,
+                    amortizacaoMensal,
+                    saldoDevedorBase,
+                    jurosPeriodo,
+                    0.0,
+                    1
+                );
+                
+                numeroParcela++;
+                jurosAcumulado = 0.0;
+                saldoDevedorAtual = saldoDevedorBase;
+            } else {
+                saldoDevedorAtual = round(saldoDevedorBase + jurosPeriodo);
+                jurosAcumulado += jurosPeriodo;
+                
+                installment = createInstallment(
+                    proximaData,
+                    0.0,
+                    saldoDevedorAtual,
+                    null,
+                    0.0,
+                    0.0,
+                    saldoDevedorBase,
+                    jurosPeriodo,
+                    jurosAcumulado,
+                    0
+                );
+            }
+            
+            installments.add(installment);
+            dataAtual = proximaData;
         }
         
-        // Adiciona datas de fim de mês entre a data inicial e o primeiro pagamento
-        addEndOfMonthDates(installments, loan.getDataInicial(), loan.getPrimeiroPagamento(), loan);
-        
         return installments;
+    }
+    
+    private InstallmentDTO createInstallment(
+            LocalDate dataCompetencia,
+            double valorEmprestimo,
+            double saldoDevedor,
+            String consolidada,
+            double parcela,
+            double amortizacao,
+            double saldo,
+            double provisao,
+            double acumulado,
+            int pago) {
+        InstallmentDTO installment = new InstallmentDTO();
+        installment.setDataCompetencia(dataCompetencia);
+        installment.setValorEmprestimo(round(valorEmprestimo));
+        installment.setSaldoDevedor(round(saldoDevedor));
+        installment.setConsolidada(consolidada);
+        installment.setParcela(round(parcela));
+        installment.setTotal(round(parcela));
+        installment.setAmortizacao(round(amortizacao));
+        installment.setSaldo(round(saldo));
+        installment.setProvisao(round(provisao));
+        installment.setAcumulado(round(acumulado));
+        installment.setPago(pago);
+        return installment;
+    }
+    
+    private double round(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 
     private void validateDates(LoanCalculation loan) {
@@ -54,59 +159,5 @@ public class LoanCalculatorService {
             loan.getPrimeiroPagamento().isAfter(loan.getDataFinal())) {
             throw new IllegalArgumentException("Data do primeiro pagamento deve estar entre a data inicial e final");
         }
-    }
-    
-    private double calculateInitialAmount(LoanCalculation loan) {
-        return -loan.getValorEmprestimo();
-    }
-    
-    private double calculateInstallmentAmount(LoanCalculation loan, int installmentNumber) {
-        int totalInstallments = calculateTotalInstallments(loan);
-        double monthlyRate = loan.getTaxaJuros() / LoanConstants.PERCENTAGE_DIVISOR / LoanConstants.MONTHS_IN_YEAR;
-        
-        // Fórmula PMT para cálculo das parcelas
-        double pmt = loan.getValorEmprestimo() * 
-                    (monthlyRate * Math.pow(1 + monthlyRate, totalInstallments)) /
-                    (Math.pow(1 + monthlyRate, totalInstallments) - 1);
-                    
-        return pmt;
-    }
-    
-    private int calculateTotalInstallments(LoanCalculation loan) {
-        return (int) ChronoUnit.MONTHS.between(
-            loan.getPrimeiroPagamento().withDayOfMonth(1),
-            loan.getDataFinal().withDayOfMonth(1)
-        ) + 1;
-    }
-    
-    private LocalDate adjustToMonthEnd(LocalDate date) {
-        LocalDate lastDayOfMonth = date.withDayOfMonth(date.lengthOfMonth());
-        return date.getDayOfMonth() > lastDayOfMonth.getDayOfMonth() ? lastDayOfMonth : date;
-    }
-    
-    private void addEndOfMonthDates(List<InstallmentDTO> installments, LocalDate startDate, LocalDate endDate, LoanCalculation loan) {
-        LocalDate currentDate = startDate.withDayOfMonth(startDate.lengthOfMonth());
-        
-        while (currentDate.isBefore(endDate)) {
-            if (!currentDate.equals(startDate)) {
-                addInstallment(installments, currentDate, 0.0, 0);
-            }
-            currentDate = currentDate.plusMonths(1).withDayOfMonth(currentDate.plusMonths(1).lengthOfMonth());
-        }
-    }
-    
-    private void addInstallment(List<InstallmentDTO> installments, LocalDate date, Double amount, Integer installmentNumber) {
-        InstallmentDTO installment = new InstallmentDTO();
-        installment.setDataCompetencia(date);
-        installment.setValorEmprestimo(amount);
-        installment.setParcela(amount);
-        installment.setSaldoDevedor(0.0);
-        installment.setTotal(0.0);
-        installment.setAmortizacao(0.0);
-        installment.setSaldo(0.0);
-        installment.setProvisao(0.0);
-        installment.setAcumulado(0.0);
-        installment.setPago(false);
-        installments.add(installment);
     }
 } 
