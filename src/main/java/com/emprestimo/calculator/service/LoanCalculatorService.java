@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.ArrayList;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 @Service
 public class LoanCalculatorService {
@@ -28,13 +30,13 @@ public class LoanCalculatorService {
             loan.getDataInicial(),
             valorEmprestimo,
             valorEmprestimo,
-            null,
+            "",
             0.0,
             0.0,
             valorEmprestimo,
             0.0,
             0.0,
-            0
+            0.0  
         );
         installments.add(inicial);
         
@@ -51,10 +53,11 @@ public class LoanCalculatorService {
             if (dataAtual.equals(loan.getDataInicial())) {
                 proximaData = dataAtual.withDayOfMonth(dataAtual.lengthOfMonth());
             } else if (dataAtual.getDayOfMonth() == dataAtual.lengthOfMonth()) {
-                LocalDate dia15ProximoMes = dataAtual.plusMonths(1).withDayOfMonth(15);
-                if (dia15ProximoMes.isAfter(loan.getPrimeiroPagamento()) || 
-                    dia15ProximoMes.equals(loan.getPrimeiroPagamento())) {
-                    proximaData = dia15ProximoMes;
+                // Se estamos no fim do mês, próxima data é dia 15-18 ou fim do próximo mês
+                LocalDate proximoPagamento = getProximaDataPagamento(dataAtual.plusMonths(1), numeroParcela);
+                if (proximoPagamento.isAfter(loan.getPrimeiroPagamento()) || 
+                    proximoPagamento.equals(loan.getPrimeiroPagamento())) {
+                    proximaData = proximoPagamento;
                 } else {
                     proximaData = dataAtual.plusMonths(1).withDayOfMonth(
                         dataAtual.plusMonths(1).lengthOfMonth());
@@ -67,14 +70,14 @@ public class LoanCalculatorService {
             double fatorJuros = Math.pow(1 + taxaAnual, diasPeriodo / (double)DIAS_BASE) - 1;
             double jurosPeriodo = round(saldoDevedorBase * fatorJuros);
             
-            boolean isPagamento = proximaData.getDayOfMonth() == 15 && 
+            boolean isPagamento = proximaData.getDayOfMonth() >= 15 && proximaData.getDayOfMonth() <= 18 && 
                 (proximaData.isAfter(loan.getPrimeiroPagamento()) || 
                 proximaData.equals(loan.getPrimeiroPagamento()));
             
             InstallmentDTO installment;
             if (isPagamento) {
                 jurosAcumulado += jurosPeriodo;
-                String consolidada = numeroParcela + "/" + NUMERO_PARCELAS;
+                String consolidada = String.format("%d/%d", numeroParcela, NUMERO_PARCELAS);
                 
                 saldoDevedorBase = round(saldoDevedorBase - amortizacaoMensal);
                 double valorParcela = round(amortizacaoMensal + jurosAcumulado);
@@ -89,7 +92,7 @@ public class LoanCalculatorService {
                     saldoDevedorBase,
                     jurosPeriodo,
                     0.0,
-                    1
+                    jurosAcumulado  // Pago recebe o valor dos juros acumulados
                 );
                 
                 numeroParcela++;
@@ -103,13 +106,13 @@ public class LoanCalculatorService {
                     proximaData,
                     0.0,
                     saldoDevedorAtual,
-                    null,
+                    "",
                     0.0,
                     0.0,
                     saldoDevedorBase,
                     jurosPeriodo,
                     jurosAcumulado,
-                    0
+                    0.0  // Pago como double
                 );
             }
             
@@ -118,6 +121,26 @@ public class LoanCalculatorService {
         }
         
         return installments;
+    }
+    
+    private LocalDate getProximaDataPagamento(LocalDate data, int numeroParcela) {
+        int dia;
+        int mes = data.getMonthValue();
+        
+        // Define o dia do pagamento com base no mês
+        if (mes == 6) { // Junho
+            dia = 17;
+        } else if (mes == 9) { // Setembro
+            dia = 16;
+        } else if (mes == 11) { // Novembro
+            dia = 18;
+        } else if (mes == 12) { // Dezembro
+            dia = 16;
+        } else {
+            dia = 15;
+        }
+        
+        return data.withDayOfMonth(dia);
     }
     
     private InstallmentDTO createInstallment(
@@ -130,7 +153,7 @@ public class LoanCalculatorService {
             double saldo,
             double provisao,
             double acumulado,
-            int pago) {
+            double pago) {  // Mudado para double
         InstallmentDTO installment = new InstallmentDTO();
         installment.setDataCompetencia(dataCompetencia);
         installment.setValorEmprestimo(round(valorEmprestimo));
@@ -142,12 +165,14 @@ public class LoanCalculatorService {
         installment.setSaldo(round(saldo));
         installment.setProvisao(round(provisao));
         installment.setAcumulado(round(acumulado));
-        installment.setPago(pago);
+        installment.setPago(round(pago));  // Arredonda o valor pago
         return installment;
     }
     
     private double round(double value) {
-        return Math.round(value * 100.0) / 100.0;
+        return BigDecimal.valueOf(value)
+            .setScale(2, RoundingMode.HALF_UP)
+            .doubleValue();
     }
 
     private void validateDates(LoanCalculation loan) {
